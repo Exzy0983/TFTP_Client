@@ -1,0 +1,160 @@
+#!/usr/bin/python3
+'''
+$ tftp ip_address [-p port_number] <get|put> filename
+'''
+import socket
+import argparse
+from struct import pack
+import sys
+import select
+import time
+
+# 기본 설정
+DEFAULT_PORT = 69
+BLOCK_SIZE = 512
+DEFAULT_TRANSFER_MODE = 'octet'
+
+# TFTP 헤더의 OPCODE, MODE, ERROR CODE 정의
+OPCODE = {'RRQ': 1, 'WRQ': 2, 'DATA': 3, 'ACK': 4, 'ERROR': 5}
+MODE = {'netascii': 1, 'octet': 2, 'mail': 3}
+
+ERROR_CODE = {
+    0: "Not defined, see error message (if any).",
+    1: "File not found.",
+    2: "Access violation.",
+    3: "Disk full or allocation exceeded.",
+    4: "Illegal TFTP operation.",
+    5: "Unknown transfer ID.",
+    6: "File already exists.",
+    7: "No such user."
+}
+
+# WRQ 메시지 전송 함수
+def send_wrq(filename, mode):
+    format_string = f'>h{len(filename)}sB{len(mode)}sB'
+    wrq_message = pack(format_string, OPCODE['WRQ'], bytes(filename, 'utf-8'), 0, bytes(mode, 'utf-8'), 0)
+    sock.sendto(wrq_message, server_address)
+
+# RRQ 메시지 전송 함수
+def send_rrq(filename, mode):
+    format_string = f'>h{len(filename)}sB{len(mode)}sB'
+    rrq_message = pack(format_string, OPCODE['RRQ'], bytes(filename, 'utf-8'), 0, bytes(mode, 'utf-8'), 0)
+    sock.sendto(rrq_message, server_address)
+
+# ACK 메시지 전송 함수
+def send_ack(seq_num, server):
+    format_string = f'>hh'
+    ack_message = pack(format_string, OPCODE['ACK'], seq_num)
+    sock.sendto(ack_message, server)
+
+# DATA 메시지 전송 함수
+def send_data(block_number, data, server):
+    format_string = f'>hh{len(data)}s'
+    data_message = pack(format_string, OPCODE['DATA'], block_number, data)
+    sock.sendto(data_message, server)
+
+# ACK 메시지 수신 함수
+def receive_ack(expected_block_number):
+    while True:
+        readable, _, _ = select.select([sock], [], [], 5)  # 5초 타임아웃
+        if not readable:
+            print("Timeout. No response from the server.")
+            return False
+
+        data, server_new_socket = sock.recvfrom(516)
+        opcode = int.from_bytes(data[:2], 'big')
+
+        if opcode == OPCODE['ACK']:
+            block_number = int.from_bytes(data[2:4], 'big')
+            if block_number == expected_block_number:
+                return True
+        elif opcode == OPCODE['ERROR']:
+            error_code = int.from_bytes(data[2:4], byteorder='big')
+            print(ERROR_CODE.get(error_code, "Unknown error"))
+            return False
+
+# 명령행 인수 파싱
+parser = argparse.ArgumentParser(description='TFTP client program')
+parser.add_argument(dest="host", help="Server IP address", type=str)
+parser.add_argument(dest="operation", help="get or put a file", type=str, choices=['get', 'put'])
+parser.add_argument(dest="filename", help="name of file to transfer", type=str)
+parser.add_argument("-p", "--port", dest="port", type=int, default=DEFAULT_PORT)
+args = parser.parse_args()
+
+# UDP 소켓 생성
+server_ip = args.host
+server_port = args.port
+server_address = (server_ip, server_port)
+sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+mode = DEFAULT_TRANSFER_MODE
+operation = args.operation
+filename = args.filename
+
+# 'get' 작업을 위한 RRQ 메시지 전송
+if operation == 'get':
+    send_rrq(filename, mode)
+
+    # 서버에서 데이터를 받아 저장할 파일 열기
+    file = open(filename, 'wb')
+    expected_block_number = 1
+
+    while True:
+        readable, _, _ = select.select([sock], [], [], 5)  # 5초 타임아웃
+        if not readable:
+            print("Timeout. No response from the server.")
+            break
+
+        data, server_new_socket = sock.recvfrom(516)
+        opcode = int.from_bytes(data[:2], 'big')
+
+        if opcode == OPCODE['DATA']:
+            block_number = int.from_bytes(data[2:4], 'big')
+            if block_number == expected_block_number:
+                send_ack(block_number, server_new_socket)
+                file_block = data[4:]
+                file.write(file_block)
+                expected_block_number += 1
+            else:
+                send_ack(block_number, server_new_socket)
+
+        elif opcode == OPCODE['ERROR']:
+            error_code = int.from_bytes(data[2:4], byteorder='big')
+            print(ERROR_CODE.get(error_code, "Unknown error"))
+            break
+
+        if len(file_block) < BLOCK_SIZE:
+            file.close()
+            print(f"File transfer complete: {filename}")
+            break
+
+# 'put' 작업을 위한 WRQ 메시지 전송
+elif operation == 'put':
+    send_wrq(filename, mode)
+
+    # 파일 읽기를 위해 파일 열기
+    try:
+        file = open(filename, 'rb')
+    except FileNotFoundError:
+        print(f"Error: File not found: {filename}")
+        sys.exit(1)
+
+    block_number = 1
+    while True:
+        file_block = file.read(BLOCK_SIZE)
+        if not file_block:
+            break
+
+        send_data(block_number, file_block, server_address)
+
+        if not receive_ack(block_number):
+            print(f"Error: Failed to receive ACK for block {block_number}. Retrying...")
+            continue
+
+        block_number += 1
+
+    file.close()
+    print(f"File upload complete: {filename}")
+
+# 소켓 닫기
+sock.close()
