@@ -1,0 +1,15 @@
+# TFTP Client
+
+이 프로젝트는 Python으로 작성된 Trivial File Transfer Protocol (TFTP) 클라이언트입니다. 이 클라이언트는 TFTP를 사용하여 파일을 서버로 전송하거나 서버로부터 파일을 가져올 수 있습니다.
+
+## 사용법
+
+프로그램을 실행하려면 다음 명령을 사용하세요.
+
+```bash
+$ ./tftp_client.py <server_ip> [-p <port_number>] <get|put> <filename>
+
+# server_ip: TFTP 서버의 IP 주소.
+#-p <port_number>: (선택사항) TFTP 서버의 포트 번호. 기본값은 69입니다.
+#<get|put>: 가져오기('get') 또는 업로드('put') 작업을 지정합니다.
+#<filename>: 전송할 파일의 이름.
